@@ -17,3 +17,7 @@ gh extension install <local-path-or-repo>
 ```
 
 Install the extension from this repository or your fork, then run `gh down` to check service health whenever you need a quick status update.
+
+## Development
+
+The project includes a GitHub Actions workflow that runs `gofmt`, `go vet`, and `go test ./...` on each push and pull request. Run the same commands locally before opening a PR to catch issues early.
