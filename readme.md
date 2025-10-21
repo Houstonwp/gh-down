@@ -17,7 +17,7 @@ Add flags as needed:
 ## Installation
 
 ```bash
-gh extension install <local-path-or-repo>
+gh extension install Houstonwp/gh-down
 ```
 
 Run the command with `gh down` whenever you want a quick health check.
