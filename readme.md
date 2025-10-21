@@ -1,6 +1,6 @@
 # gh-down
 
-`gh-down` is a GitHub CLI extension that reports the current status of core GitHub services. It lets you quickly confirm whether GitHub is experiencing disruptions without leaving your terminal.
+`gh-down` is a GitHub CLI extension that prints the status of key GitHub services so you can spot outages without leaving your terminal.
 
 ## Usage
 
@@ -8,14 +8,11 @@
 gh down
 ```
 
-The command queries the GitHub status API and prints a summary of each monitored component, making it easy to spot degraded performance or outages.
+Add flags as needed:
 
-### Common options
-
-- `gh down --details` shows currently active incidents beneath the component list.
-- `gh down --resolved` adds incidents resolved within the last seven days.
-- `gh down --json` emits the report in a machine-readable format.
-- `gh down --timeout 20s` overrides the default 10-second network timeout.
+- `--details` to show active incidents.
+- `--resolved` to see incidents resolved in the past 7 days.
+- `--json` for machine-readable output.
 
 ## Installation
 
@@ -23,8 +20,4 @@ The command queries the GitHub status API and prints a summary of each monitored
 gh extension install <local-path-or-repo>
 ```
 
-Install the extension from this repository or your fork, then run `gh down` to check service health whenever you need a quick status update.
-
-## Development
-
-The project includes a GitHub Actions workflow that runs `gofmt`, `go vet`, and `go test ./...` on each push and pull request. Run the same commands locally before opening a PR to catch issues early.
+Run the command with `gh down` whenever you want a quick health check.
