@@ -4,23 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
+	"flag"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestFormatStatus(t *testing.T) {
-	t.Parallel()
-
 	cases := map[string]string{
-		"major_outage":          "Major Outage",
-		"degraded-performance":  "Degraded Performance",
-		"partial system outage": "Partial System Outage",
-		"":                      "",
+		"major_outage":         "Major Outage",
+		"degraded-performance": "Degraded Performance",
+		"partial system":       "Partial System",
+		"":                     "",
 	}
 
 	for input, want := range cases {
@@ -31,274 +29,218 @@ func TestFormatStatus(t *testing.T) {
 }
 
 func TestStatusIcon(t *testing.T) {
-	t.Parallel()
-
-	if got := statusIcon("major_outage"); got != "🔴" {
-		t.Fatalf("statusIcon(major_outage) = %q, want 🔴", got)
+	if icon := statusIcon("major_outage"); icon != "🔴" {
+		t.Fatalf("statusIcon(major_outage) = %q", icon)
 	}
-	if got := statusIcon("operational"); got != "🟢" {
-		t.Fatalf("statusIcon(operational) = %q, want 🟢", got)
+	if icon := statusIcon("operational"); icon != "🟢" {
+		t.Fatalf("statusIcon(operational) = %q", icon)
 	}
-	if got := statusIcon("investigating"); got != "🟡" {
-		t.Fatalf("statusIcon(investigating) = %q, want 🟡", got)
+	if icon := statusIcon("investigating"); icon != "🟡" {
+		t.Fatalf("statusIcon(investigating) = %q", icon)
 	}
-}
-
-func TestParseArgs(t *testing.T) {
-	t.Parallel()
-
-	opts, err := parseArgs([]string{})
-	if err != nil {
-		t.Fatalf("parseArgs([]) error = %v", err)
-	}
-	if opts.timeout != defaultTimeout {
-		t.Fatalf("expected default timeout %s, got %s", defaultTimeout, opts.timeout)
-	}
-	if opts.outputFormat != outputText {
-		t.Fatalf("expected default output format %s, got %s", outputText, opts.outputFormat)
-	}
-
-	args := []string{"details", "--timeout", "20s", "--retries", "3", "--json"}
-	opts, err = parseArgs(args)
-	if err != nil {
-		t.Fatalf("parseArgs(%v) error = %v", args, err)
-	}
-	if !opts.showDetails {
-		t.Fatal("expected showDetails to be true")
-	}
-	if opts.timeout != 20*time.Second {
-		t.Fatalf("expected timeout 20s, got %s", opts.timeout)
-	}
-	if opts.retries != 3 {
-		t.Fatalf("expected retries 3, got %d", opts.retries)
-	}
-	if opts.outputFormat != outputJSON {
-		t.Fatalf("expected output format json, got %s", opts.outputFormat)
-	}
-
-	opts, err = parseArgs([]string{"--version"})
-	if err != nil {
-		t.Fatalf("parseArgs(--version) error = %v", err)
-	}
-	if !opts.printVersion {
-		t.Fatal("expected printVersion to be true")
-	}
-
-	if _, err := parseArgs([]string{"--timeout"}); err == nil {
-		t.Fatal("expected error for missing timeout value")
+	if icon := statusIcon(""); icon != "⚪️" {
+		t.Fatalf("statusIcon(empty) = %q", icon)
 	}
 }
 
-func TestRunTextOutput(t *testing.T) {
+func TestParseFlags(t *testing.T) {
+	cfg, err := parseFlags([]string{"--details", "--timeout", "15s", "--json"})
+	if err != nil {
+		t.Fatalf("parseFlags returned error: %v", err)
+	}
+	if !cfg.showDetails || cfg.output != outputJSON || cfg.timeout != 15*time.Second {
+		t.Fatalf("unexpected config: %#v", cfg)
+	}
+
+	_, err = parseFlags([]string{"--timeout", "0s"})
+	if err == nil {
+		t.Fatal("expected error for zero timeout")
+	}
+
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+
+	_, err = parseFlags([]string{"--help"})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("expected flag.ErrHelp, got %v", err)
+	}
+}
+
+func TestRenderText(t *testing.T) {
+	buf := &bytes.Buffer{}
+
+	rep := report{
+		Components: []component{
+			{Name: "API Requests", Status: "operational"},
+			{Name: "Codespaces", Status: "major_outage"},
+		},
+		Active: []incident{
+			{
+				Name:   "Codespaces degraded",
+				Status: "investigating",
+				Impact: "major",
+				IncidentUpdates: []incidentUpdate{
+					{Status: "investigating", Body: "Looking into it.", CreatedAt: time.Now().Add(-10 * time.Minute).Format(time.RFC3339)},
+				},
+			},
+		},
+	}
+
+	renderText(buf, rep, config{showDetails: true, showResolved: false})
+
+	out := buf.String()
+	if !strings.Contains(out, "GitHub Service Status - ") {
+		t.Fatalf("expected header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "🟢 API Requests - Operational") {
+		t.Fatalf("missing component line:\n%s", out)
+	}
+	if !strings.Contains(out, "Active incidents:") || !strings.Contains(out, "Codespaces degraded") {
+		t.Fatalf("missing incidents section:\n%s", out)
+	}
+}
+
+func TestRenderJSON(t *testing.T) {
+	buf := &bytes.Buffer{}
+	rep := report{
+		Components: []component{{Name: "API", Status: "operational"}},
+		Active: []incident{
+			{
+				Name:      "API latency",
+				Status:    "investigating",
+				Impact:    "minor",
+				Shortlink: "https://status.example/incident",
+				IncidentUpdates: []incidentUpdate{
+					{Status: "investigating", Body: "Working on it", CreatedAt: time.Now().Format(time.RFC3339)},
+				},
+			},
+		},
+	}
+
+	if err := renderJSON(buf, rep); err != nil {
+		t.Fatalf("renderJSON returned error: %v", err)
+	}
+
+	var payload jsonReport
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("cannot unmarshal JSON: %v\n%s", err, buf.String())
+	}
+
+	if len(payload.Components) != 1 || payload.Components[0].Name != "API" {
+		t.Fatalf("unexpected components: %#v", payload.Components)
+	}
+	if len(payload.ActiveIncidents) != 1 {
+		t.Fatalf("unexpected active incidents: %#v", payload.ActiveIncidents)
+	}
+}
+
+func TestBuildReport(t *testing.T) {
 	server := newStatusServer()
 	defer server.Close()
 
-	restoreEndpoints := hijackEndpoints(server.URL)
-	defer restoreEndpoints()
+	client := newStatusClient(5 * time.Second)
+	client.http = server.Client()
+	client.componentsURL = server.URL + "/components.json"
+	client.unresolvedURL = server.URL + "/incidents/unresolved.json"
+	client.incidentsURL = server.URL + "/incidents.json"
 
-	out, err := captureOutput(func() error {
-		return run(context.Background(), options{
-			showDetails:  true,
-			showResolved: true,
-			timeout:      5 * time.Second,
-			retries:      2,
-			outputFormat: outputText,
-			printVersion: false,
-		})
-	})
+	cfg := config{
+		showDetails:  true,
+		showResolved: true,
+		output:       outputText,
+		timeout:      5 * time.Second,
+	}
+
+	rep, err := buildReport(context.Background(), client, cfg)
 	if err != nil {
-		t.Fatalf("run returned error: %v", err)
+		t.Fatalf("buildReport returned error: %v", err)
 	}
 
-	if !containsAll(out,
-		"GitHub Service Status - ",
-		"Codespaces - Major Outage",
-		"Git Operations - Operational",
-		"Active incidents:",
-		"Recently resolved incidents:",
-		"Identified: Issue identified",
-		"More info: https://status.example/active",
-		"More info: https://status.example/resolved") {
-		t.Fatalf("unexpected text output:\n%s", out)
+	if len(rep.Components) != 2 {
+		t.Fatalf("expected 2 components, got %d", len(rep.Components))
 	}
-}
-
-func TestRunJSONOutput(t *testing.T) {
-	server := newStatusServer()
-	defer server.Close()
-
-	restoreEndpoints := hijackEndpoints(server.URL)
-	defer restoreEndpoints()
-
-	out, err := captureOutput(func() error {
-		return run(context.Background(), options{
-			showDetails:  false,
-			showResolved: true,
-			timeout:      5 * time.Second,
-			retries:      2,
-			outputFormat: outputJSON,
-			printVersion: false,
-		})
-	})
-	if err != nil {
-		t.Fatalf("run returned error: %v", err)
+	if len(rep.Active) != 1 {
+		t.Fatalf("expected 1 active incident, got %d", len(rep.Active))
 	}
-
-	var payload struct {
-		Components        []componentReport `json:"components"`
-		ActiveIncidents   []incidentReport  `json:"active_incidents"`
-		ResolvedIncidents []incidentReport  `json:"resolved_incidents"`
-		StatusPage        string            `json:"status_page"`
-		GeneratedAt       string            `json:"generated_at"`
+	if len(rep.Resolved) != 1 {
+		t.Fatalf("expected 1 recent resolved incident, got %d", len(rep.Resolved))
 	}
-
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal output: %v\noutput was:\n%s", err, out)
-	}
-
-	if len(payload.Components) != 2 {
-		t.Fatalf("expected 2 components, got %d", len(payload.Components))
-	}
-	if payload.Components[0].Name != "Codespaces" || payload.Components[0].Icon != "🔴" {
-		t.Fatalf("unexpected first component: %#v", payload.Components[0])
-	}
-	if payload.StatusPage != statusSiteURL {
-		t.Fatalf("unexpected status page: %s", payload.StatusPage)
-	}
-	if payload.GeneratedAt == "" {
-		t.Fatal("expected generated_at to be populated")
-	}
-	if len(payload.ActiveIncidents) == 0 || payload.ActiveIncidents[0].LatestUpdate == nil {
-		t.Fatalf("expected active incidents with latest update: %#v", payload.ActiveIncidents)
-	}
-	if len(payload.ResolvedIncidents) == 0 {
-		t.Fatal("expected resolved incidents in JSON output")
-	}
-}
-
-func captureOutput(fn func() error) (string, error) {
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		return "", err
-	}
-
-	os.Stdout = w
-	runErr := fn()
-	w.Close()
-	os.Stdout = oldStdout
-
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		return "", err
-	}
-	r.Close()
-	return buf.String(), runErr
-}
-
-func containsAll(s string, substrings ...string) bool {
-	for _, sub := range substrings {
-		if !strings.Contains(s, sub) {
-			return false
-		}
-	}
-	return true
-}
-
-func hijackEndpoints(base string) func() {
-	prevStatusURL := statusURL
-	prevUnresolved := unresolvedURL
-	prevAll := allIncidents
-	prevSite := statusSiteURL
-
-	statusURL = base + "/components.json"
-	unresolvedURL = base + "/incidents/unresolved.json"
-	allIncidents = base + "/incidents.json"
-	statusSiteURL = base + "/status"
-
-	return func() {
-		statusURL = prevStatusURL
-		unresolvedURL = prevUnresolved
-		allIncidents = prevAll
-		statusSiteURL = prevSite
+	if rep.Resolved[0].Name != "Recent Incident" {
+		t.Fatalf("unexpected resolved incident: %#v", rep.Resolved[0])
 	}
 }
 
 func newStatusServer() *httptest.Server {
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("/components.json", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{
-			"components": [
-				{"name":"Git Operations","status":"operational","group":false},
-				{"name":"Codespaces","status":"major_outage","group":false},
-				{"name":"Visit www.githubstatus.com for more information","status":"operational","group":false},
-				{"name":"Groups","status":"operational","group":true}
-			]
-		}`)
+		payload := statusResponse{
+			Components: []component{
+				{Name: "API Requests", Status: "operational", Group: false},
+				{Name: "Codespaces", Status: "major_outage", Group: false},
+				{Name: referenceComponent, Status: "operational", Group: false},
+				{Name: "Group Container", Status: "operational", Group: true},
+			},
+		}
+		json.NewEncoder(w).Encode(payload)
 	})
 
+	now := time.Now().UTC()
+	recent := now.Add(-24 * time.Hour)
+	old := now.Add(-10 * 24 * time.Hour)
+
 	mux.HandleFunc("/incidents/unresolved.json", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{
-			"incidents": [
+		payload := incidentResponse{
+			Incidents: []incident{
 				{
-					"id":"active-1",
-					"name":"Codespaces Degraded",
-					"status":"investigating",
-					"impact":"major",
-					"shortlink":"https://status.example/active",
-					"created_at":"2024-01-01T00:00:00Z",
-					"updated_at":"2024-01-01T01:00:00Z",
-					"incident_updates":[
-						{"status":"investigating","body":"We are looking into it.","created_at":"2024-01-01T00:05:00Z"},
-						{"status":"identified","body":"Issue identified","created_at":"2024-01-01T00:30:00Z"},
-						{"status":"monitoring","body":"Monitoring after mitigation.","created_at":"2024-01-01T01:15:00Z"}
-					]
-				}
-			]
-		}`)
+					ID:        "active-1",
+					Name:      "Active Incident",
+					Status:    "investigating",
+					Impact:    "major",
+					UpdatedAt: recent.Format(time.RFC3339),
+					IncidentUpdates: []incidentUpdate{
+						{Status: "investigating", Body: "Investigating", CreatedAt: recent.Format(time.RFC3339)},
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(payload)
 	})
 
 	mux.HandleFunc("/incidents.json", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{
-			"incidents": [
+		payload := incidentResponse{
+			Incidents: []incident{
 				{
-					"id":"resolved-1",
-					"name":"API Incident",
-					"status":"resolved",
-					"impact":"major",
-					"shortlink":"https://status.example/resolved",
-					"created_at":"2023-12-31T00:00:00Z",
-					"updated_at":"2024-01-02T03:00:00Z",
-					"incident_updates":[
-						{"status":"resolved","body":"Issue resolved.","created_at":"2024-01-02T03:00:00Z"}
-					]
+					ID:        "resolved-new",
+					Name:      "Recent Incident",
+					Status:    "resolved",
+					Impact:    "major",
+					UpdatedAt: recent.Format(time.RFC3339),
+					IncidentUpdates: []incidentUpdate{
+						{Status: "resolved", Body: "Fixed", CreatedAt: recent.Format(time.RFC3339)},
+					},
 				},
 				{
-					"id":"resolved-2",
-					"name":"Dependabot Delay",
-					"status":"resolved",
-					"impact":"minor",
-					"shortlink":"https://status.example/resolved2",
-					"created_at":"2023-12-31T00:00:00Z",
-					"updated_at":"2024-01-01T01:00:00Z",
-					"incident_updates":[
-						{"status":"resolved","body":"Delays cleared.","created_at":"2024-01-01T01:00:00Z"}
-					]
+					ID:        "resolved-old",
+					Name:      "Old Incident",
+					Status:    "resolved",
+					Impact:    "major",
+					UpdatedAt: old.Format(time.RFC3339),
+					IncidentUpdates: []incidentUpdate{
+						{Status: "resolved", Body: "Old fix", CreatedAt: old.Format(time.RFC3339)},
+					},
 				},
 				{
-					"id":"monitoring-1",
-					"name":"Ongoing Incident",
-					"status":"monitoring",
-					"impact":"minor",
-					"shortlink":"https://status.example/monitoring",
-					"created_at":"2024-01-02T00:00:00Z",
-					"updated_at":"2024-01-02T02:00:00Z",
-					"incident_updates":[
-						{"status":"monitoring","body":"Monitoring ongoing.","created_at":"2024-01-02T02:00:00Z"}
-					]
-				}
-			]
-		}`)
+					ID:        "monitoring",
+					Name:      "Monitoring Incident",
+					Status:    "monitoring",
+					Impact:    "minor",
+					UpdatedAt: recent.Format(time.RFC3339),
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(payload)
 	})
 
 	return httptest.NewServer(mux)

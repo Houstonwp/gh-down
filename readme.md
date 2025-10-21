@@ -10,6 +10,13 @@ gh down
 
 The command queries the GitHub status API and prints a summary of each monitored component, making it easy to spot degraded performance or outages.
 
+### Common options
+
+- `gh down --details` shows currently active incidents beneath the component list.
+- `gh down --resolved` adds incidents resolved within the last seven days.
+- `gh down --json` emits the report in a machine-readable format.
+- `gh down --timeout 20s` overrides the default 10-second network timeout.
+
 ## Installation
 
 ```bash
